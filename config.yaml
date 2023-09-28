@@ -1,0 +1,18 @@
+message_db_path:
+  /Users/<username>/Library/Messages/chat.db
+sheets_link:
+  'https://docs.google.com/spreadsheets/d/abcdefg/edit?usp=sharing'
+service_account_key_path:
+  '/Users/<username>/my_secret_key.json'
+chat_ids:
+  - 4
+  - 1406
+handle_dict:
+    '+13035551234': 'Alice'
+    '+13035552345': 'Bob'
+    '+13035553456': 'Foo'
+    'fake_address@gmail.com': 'Foo'
+is_from_me_name:
+  'Baz'
+did_not_finish_score:
+  7
