@@ -104,6 +104,69 @@ def load_messages(config: dict) -> pd.DataFrame:
     finally:
         conn.close()
 
+def format_scores(emojis_df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Takes a DataFrame with decoded messages and metadata and a config file and returns a dataframe with just scores.
+
+    Parameters
+    ----------
+    emojis_df : pd.DataFrame
+        DataFrame with decoded messages and metadata
+    config : dict
+        Dictionary containing configuration settings
+
+    Returns
+    -------
+    pd.DataFrame
+        Pandas DataFrame containing only game numbers and scores
+
+    """
+    emojis_df.drop(['text', 'attributedBody'], axis=1, inplace=True)
+
+    # Keep only messages with 'Wordle ?/6' syntax
+    filtered_df = emojis_df[emojis_df['decoded_message'].str.contains('Wordle.*\/6.*', regex=True, na=False)]
+
+    # Keep only messages with wordle emoji squares in them
+    filtered_df = filtered_df[filtered_df['decoded_message'].str.contains('(?:⬛|⬜|🟨|🟦|🟩|🟧)',
+                                                                          regex=True, na=False)]
+
+    # Create new column with just extracted scores and fill in X / did not finish scores
+    filtered_df['score'] = filtered_df['decoded_message'].str.extract('(?:Wordle \d+ )(\d)(?:/\d)', expand=True)
+    filtered_df['score'] = filtered_df['score'].fillna(config['did_not_finish_score']).astype(int)
+
+    # Create new column with game numbers
+    filtered_df['game_num'] = filtered_df['decoded_message'].str.extract('(?:Wordle )(\d\d\d)(?: ./6)', expand=True)
+
+    print(f"Found {len(filtered_df.index)} scores in iMessage threads.")
+
+    # Use dictionary from config.yaml to translate numbers & emails to names
+    filtered_df['name'] = filtered_df['handle'].replace(config['handle_dict'])
+
+    # Use `is_from_me` flags to fill in name from config.yaml
+    filtered_df.loc[filtered_df['is_from_me'] == 1, 'name'] = config['is_from_me_name']
+
+    # make sure there are no unassigned scores
+    assert len(filtered_df[filtered_df['name'].isnull()]) == 0
+    assert len(filtered_df[filtered_df['name'] == '']) == 0
+
+    scores_df = filtered_df[['name','game_num','score']].copy()
+
+    # make sure there is only one score per game per person
+    dedup_scores_df = scores_df.groupby(['name', 'game_num']).head(1)
+    game_idx_df = dedup_scores_df.set_index('game_num')
+
+    # Pivot table & clean up
+    df_format_asc = game_idx_df.pivot(columns='name')
+    df_format_desc = df_format_asc.sort_index(ascending=False)
+    df_format_desc.fillna('', inplace=True)
+
+    # Change game numbers from index to column
+    df_format_desc.reset_index(inplace=True)
+
+    # cast game numbers to int
+    df_format_desc.game_num = df_format_desc.game_num.astype(int)
+
+    return df_format_desc
+
 
 def write_to_sheets(config: dict, names_list: list, scores_list: list) -> str:
     """Uses gspread to write score information to Google Sheet.
@@ -143,59 +206,15 @@ def main() -> None:
     
     print(f'Accessing local iMessage chat.db...')
     emojis_df = load_messages(config)
-
     emojis_df['decoded_message'] = emojis_df['attributedBody'].apply(lambda x: decode_streamtyped_blob(x))
-    emojis_df.drop(['text', 'attributedBody'], axis=1, inplace=True)
-
-    # Keep only messages with 'Wordle ?/6' syntax
-    filtered_df = emojis_df[emojis_df['decoded_message'].str.contains('Wordle.*\/6.*', regex=True, na=False)]
-
-    # Keep only messages with wordle emoji squares in them
-    filtered_df = filtered_df[filtered_df['decoded_message'].str.contains('(?:⬛|⬜|🟨|🟦|🟩|🟧)', regex=True, na=False)]
-
-
-    # Create new column with just extracted scores and fill in X / did not finish scores
-    filtered_df['score'] = filtered_df['decoded_message'].str.extract('(?:Wordle \d+ )(\d)(?:/\d)', expand=True)
-    filtered_df['score'] = filtered_df['score'].fillna(config['did_not_finish_score']).astype(int)
-
-    # Create new column with game numbers
-    filtered_df['game_num'] = filtered_df['decoded_message'].str.extract('(?:Wordle )(\d\d\d)(?: ./6)', expand=True)
-
-    print(f"Found {len(filtered_df.index)} scores in iMessage threads.")
-
-    # Use dictionary from config.yaml to translate numbers & emails to names
-    filtered_df['name'] = filtered_df['handle'].replace(config['handle_dict'])
-
-    # Use `is_from_me` flags to fill in name from config.yaml
-    filtered_df.loc[filtered_df['is_from_me'] == 1, 'name'] = config['is_from_me_name']
-
-    # make sure there are no unassigned scores
-    assert len(filtered_df[filtered_df['name'].isnull()]) == 0
-    assert len(filtered_df[filtered_df['name'] == '']) == 0
-
-    scores_df = filtered_df[['name','game_num','score']].copy()
-
-    # make sure there is only one score per game per person
-    dedup_scores_df = scores_df.groupby(['name', 'game_num']).head(1)
-    game_idx_df = dedup_scores_df.set_index('game_num')
-
-    # Pivot table & clean up
-    df_format_asc = game_idx_df.pivot(columns='name')
-    df_format_desc = df_format_asc.sort_index(ascending=False)
-    df_format_desc.fillna('', inplace=True)
-
-    # Change game numbers from index to column
-    df_format_desc.reset_index(inplace=True)
-
-    # cast game numbers to int
-    df_format_desc.game_num = df_format_desc.game_num.astype(int)
+    formatted_scores_df = format_scores(emojis_df, config)
 
     # get list of names to upload them separately
-    names_list = df_format_asc.columns.levels[1].tolist()
+    names_list = formatted_scores_df.columns.levels[1][:-1].tolist()
     # Extract values only as list
-    scores_list = df_format_desc.values.tolist()
+    scores_list = formatted_scores_df.values.tolist()
 
-    game_nums = df_format_desc.game_num
+    game_nums = formatted_scores_df.game_num
     print(f'Writing scores to Google Sheet. Game number range: {game_nums.min()} - {game_nums.max()}')
 
     sheets_response = write_to_sheets(config, names_list, scores_list)
